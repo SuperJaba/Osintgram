@@ -51,14 +51,14 @@ Osintgram.
 ## Two ways to drive it
 
 <p align="center">
-<img src=".img/web-commands.png" width="860" alt="Base mode: 29 commands in two columns, grouped by colour and collapsible, with a search box and the run sheet">
+<img src=".img/web-commands.png" width="860" alt="Base mode: 30 commands in two columns, grouped by colour and collapsible, with a search box and the run sheet">
 </p>
 
 **AI mode** — describe what you want. A local model picks the commands, runs
 them and summarizes. It can only choose from the same list below; it can't
 invent lookups or make up data.
 
-**Base mode** — no model, no Ollama needed. All 29 commands, one line each,
+**Base mode** — no model, no Ollama needed. All 30 commands, one line each,
 grouped and searchable. Tick what you want, set the parameters, run them in
 order.
 

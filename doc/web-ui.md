@@ -266,7 +266,7 @@ both modes.
 
 ## 5. What you can ask for
 
-29 commands, grouped by what they tell you. Parameters are in `code`.
+30 commands, grouped by what they tell you. Parameters are in `code`.
 
 ### Profile
 
