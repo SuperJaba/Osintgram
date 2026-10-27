@@ -9,6 +9,7 @@ first. Uses a local LLM (Ollama) instead of a paid API so no external LLM
 key/billing is required - only Ollama running locally with a tool-calling
 capable model pulled (see README).
 """
+import configparser
 import json
 import os
 import queue
@@ -56,6 +57,13 @@ from src.web.tools import (
     resolve_call_args,
     tool_specs,
     tools_to_openai_specs,
+)
+from src.web.llm_client import (
+    fetch_available_models,
+    resolve_llm_info,
+    run_llm_chat,
+    save_ai_config,
+    set_runtime_ai_config,
 )
 
 LLM_BACKEND = os.getenv("LLM_BACKEND", "auto").lower()
@@ -434,11 +442,15 @@ def _run_agent_events(
     yield _start_event(service, max_items, cache_ttl_seconds)
 
     tools = build_tools(service)
+    from src.web.web_search import resolve_web_search_config
+    web_enabled = resolve_web_search_config().enabled
+    if not web_enabled:
+        tools = [fn for fn in tools if fn.__name__ != "search_public_context"]
     if not service.target:
         # Without a target only the account-free searches can run at all -
         # offering the model the other twenty-odd tools would just buy a round
         # of calls that every one of them refuses.
-        tools = [fn for fn in tools if fn.__name__ in TARGET_FREE_TOOLS]
+        tools = [fn for fn in tools if fn.__name__ in TARGET_FREE_TOOLS or (fn.__name__ == "search_public_context" and web_enabled)]
     dispatch = {fn.__name__: fn for fn in tools}
 
     subject = (
@@ -492,139 +504,36 @@ def _run_agent_events(
         # silence: on a local 8B model writing a paragraph takes seconds, and
         # a frozen page reads as a hung tool. Tool calls arrive whole in their
         # own chunks, so they are simply collected until the turn ends.
-        content_parts: list = []
-        tool_calls: list = []
-
-        if backend == "lmstudio":
-            lm_host = resolve_lmstudio_host()
-            lm_model = resolve_lmstudio_model(lm_host)
-            openai_tools = tools_to_openai_specs(tools)
-            payload = {
-                "model": lm_model,
-                "messages": messages,
-                "tools": openai_tools,
-                "stream": True,
+        llm_info = resolve_llm_info()
+        chat_gen = run_llm_chat(
+            provider=llm_info["provider"],
+            model=llm_info["model"],
+            messages=messages,
+            tools=tools,
+            options={
+                "num_predict": OLLAMA_MAX_TOKENS,
+                "num_ctx": OLLAMA_NUM_CTX,
                 "temperature": OLLAMA_TEMPERATURE,
-                "max_tokens": OLLAMA_MAX_TOKENS,
-            }
-            headers = {
-                "Authorization": f"Bearer {LMSTUDIO_API_KEY}",
-                "Content-Type": "application/json",
-            }
-            url = f"{lm_host.rstrip('/')}/chat/completions"
-            tool_calls_acc: dict = {}
-            with httpx.Client(timeout=180.0) as http_client:
-                with http_client.stream("POST", url, json=payload, headers=headers) as resp:
-                    resp.raise_for_status()
-                    for line in resp.iter_lines():
-                        if not line or not line.startswith("data: "):
-                            continue
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data_str)
-                        except Exception:
-                            continue
-                        choices = chunk.get("choices") or []
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta", {})
-                        if delta.get("content"):
-                            text = delta["content"]
-                            content_parts.append(text)
-                            yield {"type": "answer_delta", "text": text}
-                        if delta.get("tool_calls"):
-                            for tc in delta["tool_calls"]:
-                                idx = tc.get("index", 0)
-                                if idx not in tool_calls_acc:
-                                    tool_calls_acc[idx] = {
-                                        "id": tc.get("id") or f"call_{idx}_{uuid.uuid4().hex[:6]}",
-                                        "name": "",
-                                        "arguments": "",
-                                    }
-                                if tc.get("id"):
-                                    tool_calls_acc[idx]["id"] = tc["id"]
-                                fn = tc.get("function") or {}
-                                if fn.get("name"):
-                                    tool_calls_acc[idx]["name"] += fn["name"]
-                                if fn.get("arguments"):
-                                    tool_calls_acc[idx]["arguments"] += fn["arguments"]
+            },
+            lmstudio_url=llm_info.get("base_url", "http://127.0.0.1:1234/v1"),
+            api_key=llm_info.get("api_key", ""),
+        )
+        content = ""
+        tool_calls = []
+        try:
+            while True:
+                delta_event = next(chat_gen)
+                yield delta_event
+        except StopIteration as stop:
+            if stop.value:
+                content, tool_calls = stop.value
 
-            for idx in sorted(tool_calls_acc.keys()):
-                raw = tool_calls_acc[idx]
-                args = {}
-                if raw["arguments"]:
-                    try:
-                        args = json.loads(raw["arguments"])
-                    except Exception:
-                        args = {}
-                tool_calls.append({
-                    "id": raw["id"],
-                    "name": raw["name"],
-                    "arguments": args,
-                })
-        else:
-            if ollama is None:
-                raise RuntimeError(
-                    "The `ollama` Python package is not installed. Either install it, "
-                    "or set LLM_BACKEND=lmstudio to use LM Studio instead."
-                )
-            for chunk in ollama.chat(
-                model=OLLAMA_MODEL,
-                messages=messages,
-                tools=tools,
-                stream=True,
-                options={
-                    "num_predict": OLLAMA_MAX_TOKENS,
-                    "num_ctx": OLLAMA_NUM_CTX,
-                    "temperature": OLLAMA_TEMPERATURE,
-                },
-            ):
-                piece = chunk.message
-                if piece.content:
-                    content_parts.append(piece.content)
-                    yield {"type": "answer_delta", "text": piece.content}
-                if piece.tool_calls:
-                    for tc in piece.tool_calls:
-                        tool_calls.append({
-                            "id": getattr(tc, "id", None) or f"call_{len(tool_calls)}_{uuid.uuid4().hex[:6]}",
-                            "name": tc.function.name,
-                            "arguments": dict(tc.function.arguments or {}),
-                        })
-
-        content = "".join(content_parts)
-        if backend == "lmstudio":
-            if tool_calls:
-                msg = {
-                    "role": "assistant",
-                    "content": content or None,
-                    "tool_calls": [
-                        {
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                "arguments": json.dumps(tc["arguments"]),
-                            },
-                        }
-                        for tc in tool_calls
-                    ],
-                }
-            else:
-                msg = {"role": "assistant", "content": content}
-        else:
-            msg = {"role": "assistant", "content": content}
-            if tool_calls:
-                msg["tool_calls"] = [
-                    {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                    for tc in tool_calls
-                ]
+        msg = {"role": "assistant", "content": content}
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
         messages.append(msg)
 
         if not tool_calls:
-            # Already streamed above; this carries the whole text for the
-            # non-streaming response and for the export.
             yield {"type": "answer", "text": content}
             return
 
@@ -634,15 +543,13 @@ def _run_agent_events(
                 service, name, dispatch.get(name), dict(call["arguments"] or {}), max_items, emit_live
             )
             model_facing_result = result if is_error else _truncate_for_model(parsed_result)
-            if backend == "lmstudio":
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "name": name,
-                    "content": model_facing_result,
-                })
-            else:
-                messages.append({"role": "tool", "tool_name": name, "content": model_facing_result})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": getattr(call, "id", None) or (call.get("id") if isinstance(call, dict) else f"call_{name}"),
+                "tool_name": name,
+                "name": name,
+                "content": model_facing_result,
+            })
 
     # The loop ran out of turns with the model still asking for tools. Say so
     # plainly: the results it did collect are on screen either way.
@@ -675,7 +582,7 @@ def _profile_facts(service: OsintgramService) -> str:
             bits.append(f"{user[key]} {label}")
     if user.get("is_private"):
         if service.backend_name == "instagrapi":
-            bits.append("the profile is private on Instagram, but you can still call tools if the authenticated user follows it")
+            bits.append("the profile is PRIVATE on Instagram (call tools normally; if the logged-in user has permission or follows it, Instagram will return the data)")
         else:
             bits.append("the profile is PRIVATE, so any tool needing a public one will refuse")
     else:
@@ -829,14 +736,19 @@ def _run_safe_events(make_events: Callable[[Callable[[dict], None]], Iterator[di
         except httpx.HTTPError as e:
             q.put({"type": "error", "detail": f"LM Studio communication error: {e}"})
         except ConnectionError as e:
-            q.put({
-                "type": "error",
-                "detail": (
-                    f"Cannot reach LLM service: {e}. If using Ollama, make sure it is running "
-                    f"(`ollama serve`) and that the model has been pulled (`ollama pull {OLLAMA_MODEL}`). "
-                    f"If using LM Studio, ensure the local server is running at {resolve_lmstudio_host()}."
-                ),
-            })
+            llm_info = resolve_llm_info()
+            if llm_info.get("provider") == "lmstudio":
+                err_detail = (
+                    f"Cannot reach LM Studio at {llm_info.get('base_url', 'http://127.0.0.1:1234/v1')}: {e}. "
+                    "Make sure LM Studio is running with local server started on port 1234."
+                )
+            else:
+                err_detail = (
+                    f"Cannot reach Ollama: {e}. Make sure it is running "
+                    f"(`ollama serve`) and that the model has been pulled "
+                    f"(`ollama pull {OLLAMA_MODEL}`)."
+                )
+            q.put({"type": "error", "detail": err_detail})
         except Exception as e:
             if ollama and isinstance(e, getattr(ollama, "ResponseError", ())):
                 q.put({"type": "error", "detail": f"Ollama error: {e}"})
@@ -906,8 +818,8 @@ def about():
         "libraries": [_library_credit(*lib) for lib in THIRD_PARTY],
         # Shown in the footer's attribution: the model's own license terms
         # apply on top of Ollama's (e.g. "Built with Llama" for Llama models).
-        "ollama_model": active_model,
-        "llm_backend": backend,
+        "ollama_model": f"{resolve_llm_info()['provider'].upper()}: {resolve_llm_info()['model']}",
+        "llm_backend": resolve_llm_info()["provider"],
     }
 
 
@@ -1078,9 +990,243 @@ def clear_token(request: Request):
     return _token_state()
 
 
+class AISettingsRequest(BaseModel):
+    provider: str
+    base_url: str
+    model: Optional[str] = ""
+    api_key: Optional[str] = ""
+    remember: bool = True
+
+
+@app.get("/api/ai/settings")
+def get_ai_settings():
+    """Return current AI provider settings and connectivity state."""
+    info = resolve_llm_info()
+    models = []
+    connected = False
+    try:
+        models = fetch_available_models(info["provider"], info["base_url"], info.get("api_key", ""))
+        connected = True
+    except Exception:
+        pass
+    raw_key = info.get("api_key", "")
+    return {
+        "provider": info["provider"],
+        "base_url": info["base_url"],
+        "model": info["model"],
+        "has_api_key": bool(raw_key),
+        "api_key_preview": mask_token(raw_key) if raw_key else "",
+        "models": models,
+        "connected": connected,
+    }
+
+
+@app.post("/api/ai/settings")
+def update_ai_settings(req: AISettingsRequest, request: Request):
+    """Update and verify AI provider settings, optionally saving to config/credentials.ini."""
+    _require_local_origin(request)
+    provider = (req.provider or "lmstudio").strip().lower()
+    base_url = (req.base_url or "").strip()
+    if not base_url:
+        base_url = "http://127.0.0.1:1234/v1" if provider in ("lmstudio", "openai") else "http://127.0.0.1:11434"
+
+    api_key = (req.api_key or "").strip()
+    # Test connection and fetch available models
+    models = []
+    try:
+        models = fetch_available_models(provider, base_url, api_key)
+    except Exception as e:
+        raise HTTPException(400, f"Cannot connect to {provider} at {base_url}: {e}")
+
+    model = (req.model or "").strip()
+    if not model and models:
+        model = models[0]
+
+    set_runtime_ai_config({
+        "provider": provider,
+        "base_url": base_url,
+        "model": model,
+        "api_key": api_key,
+    })
+
+    saved = False
+    if req.remember:
+        saved = save_ai_config(provider, base_url, model, api_key)
+
+    return {
+        "ok": True,
+        "provider": provider,
+        "base_url": base_url,
+        "model": model,
+        "models": models,
+        "saved": saved,
+        "connected": True,
+    }
+
+
+@app.get("/api/ai/models")
+def get_ai_models(provider: str = "lmstudio", base_url: str = "", api_key: str = ""):
+    """Query the active provider for its list of models."""
+    provider = provider.strip().lower()
+    if not base_url:
+        base_url = "http://127.0.0.1:1234/v1" if provider in ("lmstudio", "openai") else "http://127.0.0.1:11434"
+    try:
+        models = fetch_available_models(provider, base_url, api_key)
+        return {"ok": True, "models": models}
+    except Exception as e:
+        raise HTTPException(400, f"Cannot fetch models from {provider} at {base_url}: {e}")
+
+
+class WebSearchSettingsRequest(BaseModel):
+    enabled: bool = False
+    provider: str = "duckduckgo"
+    searxng_url: Optional[str] = "http://127.0.0.1:8080"
+    parallel_api_key: Optional[str] = ""
+    remember: bool = True
+
+
+@app.get("/api/ai/websearch")
+def get_websearch_settings():
+    from src.web.web_search import resolve_web_search_config
+    cfg = resolve_web_search_config()
+    return {
+        "enabled": cfg.enabled,
+        "provider": cfg.provider,
+        "searxng_url": cfg.searxng_url,
+        "has_parallel_key": bool(cfg.parallel_api_key),
+    }
+
+
+@app.post("/api/ai/websearch")
+def update_websearch_settings(req: WebSearchSettingsRequest, request: Request):
+    _require_local_origin(request)
+    from src.web.web_search import WebSearchConfig, set_runtime_web_search_config, save_web_search_config
+    cfg = WebSearchConfig(
+        enabled=req.enabled,
+        provider=(req.provider or "duckduckgo").strip().lower(),
+        searxng_url=(req.searxng_url or "http://127.0.0.1:8080").strip(),
+        parallel_api_key=(req.parallel_api_key or "").strip(),
+    )
+    set_runtime_web_search_config(cfg)
+    saved = False
+    if req.remember:
+        saved = save_web_search_config(cfg)
+    return {"ok": True, "enabled": cfg.enabled, "provider": cfg.provider, "saved": saved}
+
+
+def mask_proxy(proxy_url: str) -> str:
+    if not proxy_url:
+        return ""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(proxy_url)
+        scheme = parsed.scheme or "http"
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        if parsed.username:
+            return f"{scheme}://{parsed.username}:***@{host}{port}"
+        return f"{scheme}://{host}{port}"
+    except Exception:
+        return proxy_url[:8] + "***"
+
+
+class ProxySettingsRequest(BaseModel):
+    proxy: str = ""
+    remember: bool = True
+
+
+@app.get("/api/proxy/settings")
+def get_proxy_settings():
+    from src.instagrapi_backend import resolve_instagrapi_proxy
+    proxy = resolve_instagrapi_proxy()
+    return {
+        "configured": bool(proxy),
+        "preview": mask_proxy(proxy) if proxy else "",
+    }
+
+
+@app.post("/api/proxy/settings")
+def update_proxy_settings(req: ProxySettingsRequest, request: Request):
+    _require_local_origin(request)
+    from src.instagrapi_backend import resolve_instagrapi_proxy
+    proxy = (req.proxy or "").strip()
+
+    # Test proxy if provided
+    if proxy:
+        import httpx
+        try:
+            with httpx.Client(proxy=proxy, timeout=7.0) as client:
+                r = client.get("https://httpbin.org/ip")
+                origin_ip = r.json().get("origin", "")
+        except Exception as e:
+            raise HTTPException(400, f"Proxy connection test failed: {e}")
+
+    # Persist or clear in credentials.ini
+    saved = False
+    if req.remember:
+        cp = configparser.ConfigParser(interpolation=None)
+        cred_path = Path("config/credentials.ini")
+        if cred_path.exists():
+            try:
+                cp.read(cred_path, encoding="utf-8")
+            except Exception:
+                pass
+        if not cp.has_section("Credentials"):
+            cp.add_section("Credentials")
+        if proxy:
+            cp.set("Credentials", "proxy", proxy)
+        elif cp.has_option("Credentials", "proxy"):
+            cp.remove_option("Credentials", "proxy")
+        cred_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cred_path, "w", encoding="utf-8") as f:
+            cp.write(f)
+        saved = True
+
+    if proxy:
+        os.environ["INSTAGRAPI_PROXY"] = proxy
+    else:
+        os.environ.pop("INSTAGRAPI_PROXY", None)
+
+    return {
+        "ok": True,
+        "configured": bool(proxy),
+        "preview": mask_proxy(proxy) if proxy else "",
+        "saved": saved,
+    }
+
+
+class GraphExportRequest(BaseModel):
+    target: str = "target"
+    results: list = []
+    format: str = "gexf"
+
+
+@app.post("/api/export/graph")
+def export_network_graph(req: GraphExportRequest):
+    """Export social network graph from scan results to GEXF (for Gephi) or JSON."""
+    from src.web.graph_export import build_social_graph, export_gexf
+    graph = build_social_graph(req.results, target=req.target)
+    safe_target = re.sub(r"[^\w.-]+", "_", req.target or "target")
+
+    if req.format.lower() == "json":
+        body = json.dumps(graph, ensure_ascii=False, indent=2)
+        return Response(
+            content=body,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{safe_target}_network.json"'},
+        )
+    else:
+        gexf_content = export_gexf(graph)
+        return Response(
+            content=gexf_content,
+            media_type="application/xml",
+            headers={"Content-Disposition": f'attachment; filename="{safe_target}_network.gexf"'},
+        )
+
+
 class DownloadRequest(BaseModel):
     urls: list
-    name: str = "media"
+    name: str = "media" 
 
 
 @app.post("/api/download")

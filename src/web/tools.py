@@ -55,7 +55,7 @@ _CLAMPED_BY_MAX_ITEMS = {"limit", "limit_posts", "match_limit"}
 # target username, so the web UI doesn't require one when only these are
 # selected. get_post_comments takes its own post/reel directly, not the
 # target's feed, so it needs no target either.
-TARGET_FREE_TOOLS = {"search_hashtag", "search_location", "get_post_comments"}
+TARGET_FREE_TOOLS = {"search_hashtag", "search_location", "get_post_comments", "search_public_context"}
 
 
 def _coerce_int(value):
@@ -208,19 +208,19 @@ def build_tools(service: OsintgramService) -> list:
         and a year."""
         return _call(service.get_account_about)
 
-    def get_followers(limit: Optional[int] = 200) -> str:
+    def get_followers(limit: Optional[int] = None) -> str:
         """List the target's followers (id, username, full name).
 
         Args:
-            limit: Maximum number of followers to return.
+            limit: Maximum number of followers to return (omit for all / no limit).
         """
         return _call(service.get_followers, limit=limit)
 
-    def get_followings(limit: Optional[int] = 200) -> str:
+    def get_followings(limit: Optional[int] = None) -> str:
         """List accounts the target follows (id, username, full name).
 
         Args:
-            limit: Maximum number of followed accounts to return.
+            limit: Maximum number of followed accounts to return (omit for all / no limit).
         """
         return _call(service.get_followings, limit=limit)
 
@@ -377,6 +377,24 @@ def build_tools(service: OsintgramService) -> list:
             return _to_json({"error": "Specify a place to search for."})
         return _call(service.search_location, place=place, limit=limit)
 
+    def search_public_context(query: str) -> str:
+        """Search the public web for context about a public place, venue, landmark, organization, or event.
+
+        Strictly privacy-guarded: queries containing personal usernames, profile URLs, or target handles will be rejected.
+
+        Args:
+            query: Name of the public landmark, venue, brand, or event to search for (e.g. 'Milan Cathedral', 'Uffizi Gallery').
+        """
+        from src.web.web_search import search_public_web, resolve_web_search_config
+        cfg = resolve_web_search_config()
+        if not cfg.enabled:
+            return _to_json({"error": "Public web search is disabled in settings. Enable it in AI Settings to use web context."})
+        target_name = service.target if service else None
+        try:
+            return _to_json(search_public_web(query, target_username=target_name))
+        except Exception as e:
+            return _to_json({"error": str(e)})
+
     def get_post_comments(post: str = "", limit: Optional[int] = None) -> str:
         """Get every comment on one specific post or reel, given directly -
         not the target's whole feed. Does not need a target account: works on
@@ -483,4 +501,5 @@ def build_tools(service: OsintgramService) -> list:
         search_hashtag,
         search_location,
         get_post_comments,
+        search_public_context,
     ]
