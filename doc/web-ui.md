@@ -266,7 +266,7 @@ both modes.
 
 ## 5. What you can ask for
 
-28 commands, grouped by what they tell you. Parameters are in `code`.
+29 commands, grouped by what they tell you. Parameters are in `code`.
 
 ### Profile
 
@@ -290,7 +290,7 @@ both modes.
 
 | Command | What you get | Parameters |
 |---|---|---|
-| **Followers** / **Following** | The accounts, with id, username, full name | `limit` (200) |
+| **Followers** / **Following** | The accounts, with id, username, full name | `limit` (None) |
 | **Suggested profiles** | Accounts Instagram suggests as related — often the real circle or alternate accounts (HikerAPI only) | |
 | **Compare profiles** | Connections in common with another account: who follows both, who both follow | `other_username`, `scope` (`both`/`followers`/`followings`), `limit` (500) |
 | **Who tagged** | Accounts that tagged the target in their own posts | `limit` |
@@ -337,6 +337,7 @@ full profile lookup. See [Keeping the cost down](#6-keeping-the-cost-down).
 |---|---|---|
 | **Hashtag search** | Posts published with a hashtag, and who posted them | `hashtag`, `sort` (`top`/`recent`), `limit` (30) |
 | **Place search** | Recent posts from a place, searched by name, with the matched place and its alternatives | `place`, `limit` (30) |
+| **Public web context** | Search public web context about landmarks or venues (opt-in) | `query` |
 
 With only these selected the username field stops being required, and the label
 says so.
@@ -546,8 +547,15 @@ Settings can be changed dynamically from the web UI header (⚙️ button) or in
 | `base_url` / `LLM_BASE_URL` | `http://127.0.0.1:1234/v1` | Endpoint URL (for LM Studio/OpenAI or Ollama) |
 | `model` / `LLM_MODEL` / `OLLAMA_MODEL` | `qwen3.5-4b` | Active model identifier |
 | `api_key` / `LLM_API_KEY` | *(empty)* | Optional API key for OpenAI-compatible proxies |
+| `WEB_SEARCH_ENABLED` | `false` | Opt-in toggle for public web context in AI mode (#2699) |
+| `WEB_SEARCH_PROVIDER` | `duckduckgo` | Provider: `duckduckgo`, `wikipedia`, `searxng`, or `parallel` |
+| `SEARXNG_URL` | `http://127.0.0.1:8080` | URL of self-hosted SearXNG meta-search instance |
+| `OLLAMA_MAX_TOKENS` | `1024` | Cap on the model's reply length |
 | `OLLAMA_NUM_CTX` | `16384` | Context window when using Ollama |
 | `OLLAMA_TEMPERATURE` | `0.1` | Temperature for tool picking |
+
+#### Public Web Context (Opt-in, #2699)
+In AI mode, users can optionally enable the `search_public_context` tool to enrich queries about landmarks, venues, and organizations with public web data (via DuckDuckGo, Wikipedia, SearXNG, or Parallel Search). It includes built-in privacy guardrails that reject queries with target usernames or profile URLs before any external request is made.
 
 ---
 

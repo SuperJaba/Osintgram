@@ -350,11 +350,15 @@ def _run_agent_events(
     yield _start_event(service, max_items, cache_ttl_seconds)
 
     tools = build_tools(service)
+    from src.web.web_search import resolve_web_search_config
+    web_enabled = resolve_web_search_config().enabled
+    if not web_enabled:
+        tools = [fn for fn in tools if fn.__name__ != "search_public_context"]
     if not service.target:
         # Without a target only the account-free searches can run at all -
         # offering the model the other twenty-odd tools would just buy a round
         # of calls that every one of them refuses.
-        tools = [fn for fn in tools if fn.__name__ in TARGET_FREE_TOOLS]
+        tools = [fn for fn in tools if fn.__name__ in TARGET_FREE_TOOLS or (fn.__name__ == "search_public_context" and web_enabled)]
     dispatch = {fn.__name__: fn for fn in tools}
 
     subject = (
@@ -481,7 +485,7 @@ def _profile_facts(service: OsintgramService) -> str:
         if isinstance(user.get(key), int):
             bits.append(f"{user[key]} {label}")
     if user.get("is_private"):
-        bits.append("the profile is marked as private on Instagram (call tools normally; if the logged-in user has permission or follows it, Instagram will return the data)")
+        bits.append("the profile is PRIVATE on Instagram (call tools normally; if the logged-in user has permission or follows it, Instagram will return the data)")
     else:
         bits.append("the profile is public")
     for key in ("is_verified", "is_business"):
@@ -952,9 +956,46 @@ def get_ai_models(provider: str = "lmstudio", base_url: str = "", api_key: str =
         raise HTTPException(400, f"Cannot fetch models from {provider} at {base_url}: {e}")
 
 
+class WebSearchSettingsRequest(BaseModel):
+    enabled: bool = False
+    provider: str = "duckduckgo"
+    searxng_url: Optional[str] = "http://127.0.0.1:8080"
+    parallel_api_key: Optional[str] = ""
+    remember: bool = True
+
+
+@app.get("/api/ai/websearch")
+def get_websearch_settings():
+    from src.web.web_search import resolve_web_search_config
+    cfg = resolve_web_search_config()
+    return {
+        "enabled": cfg.enabled,
+        "provider": cfg.provider,
+        "searxng_url": cfg.searxng_url,
+        "has_parallel_key": bool(cfg.parallel_api_key),
+    }
+
+
+@app.post("/api/ai/websearch")
+def update_websearch_settings(req: WebSearchSettingsRequest, request: Request):
+    _require_local_origin(request)
+    from src.web.web_search import WebSearchConfig, set_runtime_web_search_config, save_web_search_config
+    cfg = WebSearchConfig(
+        enabled=req.enabled,
+        provider=(req.provider or "duckduckgo").strip().lower(),
+        searxng_url=(req.searxng_url or "http://127.0.0.1:8080").strip(),
+        parallel_api_key=(req.parallel_api_key or "").strip(),
+    )
+    set_runtime_web_search_config(cfg)
+    saved = False
+    if req.remember:
+        saved = save_web_search_config(cfg)
+    return {"ok": True, "enabled": cfg.enabled, "provider": cfg.provider, "saved": saved}
+
+
 class DownloadRequest(BaseModel):
     urls: list
-    name: str = "media"
+    name: str = "media" 
 
 
 @app.post("/api/download")

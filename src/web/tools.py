@@ -346,6 +346,24 @@ def build_tools(service: OsintgramService) -> list:
             return _to_json({"error": "Specify a place to search for."})
         return _call(service.search_location, place=place, limit=limit)
 
+    def search_public_context(query: str) -> str:
+        """Search the public web for context about a public place, venue, landmark, organization, or event.
+
+        Strictly privacy-guarded: queries containing personal usernames, profile URLs, or target handles will be rejected.
+
+        Args:
+            query: Name of the public landmark, venue, brand, or event to search for (e.g. 'Milan Cathedral', 'Uffizi Gallery').
+        """
+        from src.web.web_search import search_public_web, resolve_web_search_config
+        cfg = resolve_web_search_config()
+        if not cfg.enabled:
+            return _to_json({"error": "Public web search is disabled in settings. Enable it in AI Settings to use web context."})
+        target_name = service.target if service else None
+        try:
+            return _to_json(search_public_web(query, target_username=target_name))
+        except Exception as e:
+            return _to_json({"error": str(e)})
+
     def get_highlights() -> str:
         """List the target's Story Highlights (archived stories pinned on the
         profile): title, number of stories, cover image and dates."""
@@ -436,4 +454,5 @@ def build_tools(service: OsintgramService) -> list:
         compare_with,
         search_hashtag,
         search_location,
+        search_public_context,
     ]

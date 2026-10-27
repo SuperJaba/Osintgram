@@ -1159,6 +1159,42 @@
     box-shadow: 0 6px 18px -4px var(--accent-glow);
   }
   .ai-save-btn:disabled { opacity: 0.6; cursor: default; transform: none; }
+  .ai-web-section {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px dashed var(--border);
+    background: var(--panel);
+  }
+  .ai-web-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .ai-web-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 0.83rem;
+    font-weight: 600;
+  }
+  .ai-web-toggle input { cursor: pointer; }
+  .ai-web-privacy-badge {
+    font-size: 0.72rem;
+    font-family: var(--mono);
+    color: var(--ok);
+    background: color-mix(in srgb, var(--ok) 12%, transparent);
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .ai-web-desc {
+    margin: 4px 0 0;
+    font-size: 0.76rem;
+    color: var(--muted);
+    line-height: 1.4;
+  }
   .ai-status-badge {
     font-size: 0.8rem;
     font-family: var(--mono);
@@ -1685,6 +1721,35 @@
           <input type="password" id="ai-key" class="ai-input" placeholder="optional (e.g. lm-studio)" autocomplete="off">
         </div>
       </div>
+      <!-- Public Web Context Section (Opt-in) -->
+      <div class="ai-web-section">
+        <div class="ai-web-head">
+          <label class="ai-web-toggle">
+            <input type="checkbox" id="ai-web-enabled">
+            <span class="ai-web-toggle-label">🌐 Enable Public Web Context (Opt-in)</span>
+          </label>
+          <span class="ai-web-privacy-badge">🔒 Privacy-Guarded</span>
+        </div>
+        <p class="ai-web-desc">
+          Allows the AI model to query public web information about landmarks, venues, and organizations. Target usernames and Instagram handles are strictly blocked.
+        </p>
+        <div class="ai-grid" id="ai-web-grid" style="display:none; margin-top: 10px;">
+          <div class="ai-field">
+            <label for="ai-web-provider">Search Provider</label>
+            <select id="ai-web-provider" class="ai-input">
+              <option value="duckduckgo">DuckDuckGo (Instant, Zero-Config)</option>
+              <option value="wikipedia">Wikipedia (OpenSearch API)</option>
+              <option value="searxng">SearXNG (Self-Hosted / Private)</option>
+              <option value="parallel">Parallel Search (API / MCP)</option>
+            </select>
+          </div>
+          <div class="ai-field" id="ai-web-param-box" style="display:none;">
+            <label for="ai-web-url" id="ai-web-param-label">SearXNG URL</label>
+            <input type="text" id="ai-web-url" class="ai-input" placeholder="http://127.0.0.1:8080" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+      </div>
+
       <div class="ai-bottom-row">
         <div class="ai-actions-left">
           <button type="button" class="ai-btn-sm" id="ai-test">⚡ Test Connection</button>
@@ -1935,6 +2000,7 @@
     compare_with: ["🔀", "Compare profiles", "Connections in common with another account: shared followers and followings."],
     search_hashtag: ["#️⃣", "Hashtag search", "Posts published with a hashtag and who published them. Needs no target."],
     search_location: ["🌍", "Place search", "Posts published from a place and who published them. Needs no target."],
+    search_public_context: ["🌐", "Public web context", "Search the public web for context about landmarks, places, or organizations."],
     get_followers_email: ["✉️", "Follower emails", "Public emails among the followers (one request per account checked)."],
     get_followings_email: ["✉️", "Following emails", "Public emails among the followed accounts (one request per account checked)."],
     get_followers_phone: ["📞", "Follower phones", "Public phone numbers among the followers (one request per account checked)."],
@@ -1946,7 +2012,7 @@
     ["Network", ["get_followers", "get_followings", "get_suggested_profiles", "compare_with", "get_people_who_tagged", "get_people_tagged_by_user", "get_people_who_commented"]],
     ["Content", ["get_hashtags", "get_captions", "get_addrs", "get_comment_data", "get_total_likes", "get_total_comments", "get_media_type", "get_posting_times", "get_photo_descriptions"]],
     ["Contacts", ["get_followers_email", "get_followings_email", "get_followers_phone", "get_followings_phone"]],
-    ["Search (no target)", ["search_hashtag", "search_location"]],
+    ["Search (no target)", ["search_hashtag", "search_location", "search_public_context"]],
   ];
 
   const PARAM_LABELS = {
@@ -2205,9 +2271,57 @@
     }
   }
 
+  // ---- Web Search settings ----
+  const aiWebEnabled = document.getElementById("ai-web-enabled");
+  const aiWebGrid = document.getElementById("ai-web-grid");
+  const aiWebProvider = document.getElementById("ai-web-provider");
+  const aiWebParamBox = document.getElementById("ai-web-param-box");
+  const aiWebParamLabel = document.getElementById("ai-web-param-label");
+  const aiWebUrl = document.getElementById("ai-web-url");
+
+  function updateWebParamVisibility() {
+    const p = aiWebProvider.value;
+    if (p === "searxng") {
+      aiWebParamBox.style.display = "";
+      aiWebParamLabel.textContent = "SearXNG URL";
+      aiWebUrl.placeholder = "http://127.0.0.1:8080";
+      aiWebUrl.type = "text";
+    } else if (p === "parallel") {
+      aiWebParamBox.style.display = "";
+      aiWebParamLabel.textContent = "Parallel API Key";
+      aiWebUrl.placeholder = "Optional API key";
+      aiWebUrl.type = "password";
+    } else {
+      aiWebParamBox.style.display = "none";
+    }
+  }
+
+  aiWebEnabled.addEventListener("change", () => {
+    aiWebGrid.style.display = aiWebEnabled.checked ? "grid" : "none";
+  });
+
+  aiWebProvider.addEventListener("change", updateWebParamVisibility);
+
+  async function loadWebSearchSettings() {
+    try {
+      const resp = await fetch("/api/ai/websearch");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      aiWebEnabled.checked = Boolean(data.enabled);
+      aiWebGrid.style.display = aiWebEnabled.checked ? "grid" : "none";
+      if (data.provider) aiWebProvider.value = data.provider;
+      if (data.searxng_url && data.provider === "searxng") aiWebUrl.value = data.searxng_url;
+      updateWebParamVisibility();
+    } catch (_) {}
+  }
+
   aiChip.addEventListener("click", () => {
     aiPanel.hidden = !aiPanel.hidden;
-    if (!aiPanel.hidden) loadAiSettings();
+    if (!aiPanel.hidden) {
+      loadAiSettings();
+  loadWebSearchSettings();
+      loadWebSearchSettings();
+    }
   });
   aiClose.addEventListener("click", () => { aiPanel.hidden = true; });
 
@@ -2276,6 +2390,22 @@
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+
+      // Also persist web search configuration
+      try {
+        await fetch("/api/ai/websearch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            enabled: aiWebEnabled.checked,
+            provider: aiWebProvider.value,
+            searxng_url: aiWebProvider.value === "searxng" ? aiWebUrl.value.trim() : "http://127.0.0.1:8080",
+            parallel_api_key: aiWebProvider.value === "parallel" ? aiWebUrl.value.trim() : "",
+            remember,
+          }),
+        });
+      } catch (_) {}
+
       aiChipLabel.textContent = `AI: ${data.provider.toUpperCase()} (${data.model})`;
       aiChip.classList.toggle("missing", !data.connected);
       setAiStatus(`✓ Active model: ${data.model}${data.saved ? " (saved to credentials.ini)" : ""}.`, "ok");

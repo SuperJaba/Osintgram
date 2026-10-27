@@ -395,8 +395,8 @@ class OsintgramService:
 
     def _require_public(self) -> None:
         self._require_target()
-        # Allow requests to proceed: if the logged-in session has access (owns or follows the account),
-        # Instagram's API will return the data. If not authorized, the API call itself will fail.
+        if self.is_private and self.backend_name != "instagrapi":
+            raise PrivateProfileError(f"@{self.target} has a private profile")
 
     def _iter_items(self, api_method, results_key: str, cursor_param: str = "page_id", user_id=None):
         """Yield a user's items page by page, normalized (see normalize_payload).
@@ -1199,6 +1199,8 @@ class OsintgramService:
             raise OsintServiceError(f"invalid scope: {scope!r} (use followers, followings or both)")
         self._require_public()
         other = normalize_payload(self._fetch_user(other_username))
+        if other.get("is_private") and self.backend_name != "instagrapi":
+            raise PrivateProfileError(f"@{other_username} has a private profile")
         other_id = other["pk"]
 
         def common(mine, theirs):

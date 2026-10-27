@@ -47,7 +47,7 @@ def _read_ai_config() -> dict:
             parser = configparser.ConfigParser(interpolation=None)
             parser.read(ini_path)
             if parser.has_section("AI"):
-                if parser.has_option("AI", "provider"):
+                if parser.has_option("AI", "provider") and not os.getenv("LLM_PROVIDER"):
                     config["provider"] = parser.get("AI", "provider").strip().lower()
                 if parser.has_option("AI", "base_url") or parser.has_option("AI", "lmstudio_url"):
                     config["base_url"] = (
@@ -301,9 +301,7 @@ def run_llm_chat(
 
     else:
         # Default Ollama provider
-        host = lmstudio_url if "11434" in lmstudio_url else None
-        client = ollama.Client(host=host) if host else None
-        chat_fn = client.chat if client else ollama.chat
+        chat_fn = ollama.chat
 
         for chunk in chat_fn(
             model=model,
