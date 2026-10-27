@@ -32,3 +32,5 @@ env/
 .graphify/
 .graphifyignore
 .fresh/
+
+agy-skills-bundle.*

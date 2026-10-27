@@ -993,6 +993,87 @@ def update_websearch_settings(req: WebSearchSettingsRequest, request: Request):
     return {"ok": True, "enabled": cfg.enabled, "provider": cfg.provider, "saved": saved}
 
 
+def mask_proxy(proxy_url: str) -> str:
+    if not proxy_url:
+        return ""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(proxy_url)
+        scheme = parsed.scheme or "http"
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        if parsed.username:
+            return f"{scheme}://{parsed.username}:***@{host}{port}"
+        return f"{scheme}://{host}{port}"
+    except Exception:
+        return proxy_url[:8] + "***"
+
+
+class ProxySettingsRequest(BaseModel):
+    proxy: str = ""
+    remember: bool = True
+
+
+@app.get("/api/proxy/settings")
+def get_proxy_settings():
+    from src.instagrapi_backend import resolve_instagrapi_proxy
+    proxy = resolve_instagrapi_proxy()
+    return {
+        "configured": bool(proxy),
+        "preview": mask_proxy(proxy) if proxy else "",
+    }
+
+
+@app.post("/api/proxy/settings")
+def update_proxy_settings(req: ProxySettingsRequest, request: Request):
+    _require_local_origin(request)
+    from src.instagrapi_backend import resolve_instagrapi_proxy
+    proxy = (req.proxy or "").strip()
+
+    # Test proxy if provided
+    if proxy:
+        import httpx
+        try:
+            with httpx.Client(proxy=proxy, timeout=7.0) as client:
+                r = client.get("https://httpbin.org/ip")
+                origin_ip = r.json().get("origin", "")
+        except Exception as e:
+            raise HTTPException(400, f"Proxy connection test failed: {e}")
+
+    # Persist or clear in credentials.ini
+    saved = False
+    if req.remember:
+        cp = configparser.ConfigParser(interpolation=None)
+        cred_path = Path("config/credentials.ini")
+        if cred_path.exists():
+            try:
+                cp.read(cred_path, encoding="utf-8")
+            except Exception:
+                pass
+        if not cp.has_section("Credentials"):
+            cp.add_section("Credentials")
+        if proxy:
+            cp.set("Credentials", "proxy", proxy)
+        elif cp.has_option("Credentials", "proxy"):
+            cp.remove_option("Credentials", "proxy")
+        cred_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cred_path, "w", encoding="utf-8") as f:
+            cp.write(f)
+        saved = True
+
+    if proxy:
+        os.environ["INSTAGRAPI_PROXY"] = proxy
+    else:
+        os.environ.pop("INSTAGRAPI_PROXY", None)
+
+    return {
+        "ok": True,
+        "configured": bool(proxy),
+        "preview": mask_proxy(proxy) if proxy else "",
+        "saved": saved,
+    }
+
+
 class GraphExportRequest(BaseModel):
     target: str = "target"
     results: list = []

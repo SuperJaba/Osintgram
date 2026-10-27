@@ -1750,6 +1750,28 @@
         </div>
       </div>
 
+      <!-- Proxy Settings (instagrapi) -->
+      <div class="ai-web-section" style="margin-top: 14px;">
+        <div class="ai-web-head">
+          <label class="ai-web-toggle">
+            <span class="ai-web-toggle-label">🛡️ Proxy Gateway (instagrapi backend)</span>
+          </label>
+          <span class="ai-web-privacy-badge" id="proxy-status-badge">Direct IP</span>
+        </div>
+        <p class="ai-web-desc">
+          Route instagrapi queries through an HTTP/SOCKS5 or rotating residential proxy to bypass rate limits and IP action blocks.
+        </p>
+        <div class="ai-grid" style="margin-top: 10px; grid-template-columns: 1fr auto auto; align-items: end;">
+          <div class="ai-field">
+            <label for="proxy-input">Proxy URL</label>
+            <input type="text" id="proxy-input" class="ai-input" placeholder="http://user:pass@host:port or socks5://host:port" autocomplete="off" spellcheck="false">
+          </div>
+          <button type="button" class="ai-btn-sm" id="proxy-test-btn" style="height:38px;">⚡ Test</button>
+          <button type="button" class="ai-btn-sm" id="proxy-save-btn" style="height:38px; border-color:var(--accent); color:var(--accent);">Save</button>
+        </div>
+        <p class="key-status" id="proxy-status-msg" hidden style="margin-top:8px; font-size:0.78rem;"></p>
+      </div>
+
       <div class="ai-bottom-row">
         <div class="ai-actions-left">
           <button type="button" class="ai-btn-sm" id="ai-test">⚡ Test Connection</button>
@@ -2315,12 +2337,87 @@
     } catch (_) {}
   }
 
+    // ---- Proxy settings ----
+  const proxyInput = document.getElementById("proxy-input");
+  const proxyStatusBadge = document.getElementById("proxy-status-badge");
+  const proxyTestBtn = document.getElementById("proxy-test-btn");
+  const proxySaveBtn = document.getElementById("proxy-save-btn");
+  const proxyStatusMsg = document.getElementById("proxy-status-msg");
+
+  function setProxyStatus(text, kind) {
+    proxyStatusMsg.textContent = text;
+    proxyStatusMsg.className = `key-status${kind ? ` ${kind}` : ""}`;
+    proxyStatusMsg.hidden = !text;
+  }
+
+  async function loadProxySettings() {
+    try {
+      const resp = await fetch("/api/proxy/settings");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.configured) {
+        proxyStatusBadge.textContent = "● Proxy Active";
+        proxyStatusBadge.style.color = "var(--ok)";
+        proxyInput.placeholder = `current: ${data.preview}`;
+      } else {
+        proxyStatusBadge.textContent = "Direct IP";
+        proxyStatusBadge.style.color = "var(--muted)";
+      }
+    } catch (_) {}
+  }
+
+  proxyTestBtn.addEventListener("click", async () => {
+    const proxy = proxyInput.value.trim();
+    if (!proxy) {
+      setProxyStatus("Enter a proxy URL to test.", "err");
+      return;
+    }
+    proxyTestBtn.disabled = true;
+    setProxyStatus("Testing proxy connection…");
+    try {
+      const resp = await fetch("/api/proxy/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proxy, remember: false }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+      setProxyStatus("✓ Proxy connected successfully!", "ok");
+    } catch (err) {
+      setProxyStatus(`✗ ${err.message || err}`, "err");
+    } finally {
+      proxyTestBtn.disabled = false;
+    }
+  });
+
+  proxySaveBtn.addEventListener("click", async () => {
+    const proxy = proxyInput.value.trim();
+    proxySaveBtn.disabled = true;
+    setProxyStatus("Saving proxy…");
+    try {
+      const resp = await fetch("/api/proxy/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proxy, remember: true }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+      setProxyStatus(proxy ? "✓ Proxy saved to credentials.ini!" : "✓ Proxy cleared (using Direct IP).", "ok");
+      loadProxySettings();
+    } catch (err) {
+      setProxyStatus(`✗ ${err.message || err}`, "err");
+    } finally {
+      proxySaveBtn.disabled = false;
+    }
+  });
+
   aiChip.addEventListener("click", () => {
     aiPanel.hidden = !aiPanel.hidden;
     if (!aiPanel.hidden) {
       loadAiSettings();
-  loadWebSearchSettings();
       loadWebSearchSettings();
+  loadProxySettings();
+      loadProxySettings();
     }
   });
   aiClose.addEventListener("click", () => { aiPanel.hidden = true; });

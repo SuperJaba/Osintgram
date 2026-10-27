@@ -20,15 +20,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from instagrapi import Client
 
-from src.instagrapi_backend import DEFAULT_SESSION_PATH, resolve_instagrapi_credentials
+from src.instagrapi_backend import DEFAULT_SESSION_PATH, resolve_instagrapi_credentials, resolve_instagrapi_proxy
 
 
 def challenge_code_handler(username, choice):
     return input(f"\n[2FA Verification] Enter verification code ({choice}) for @{username}: ").strip()
 
 
-def login_with_sessionid(sessionid: str, session_path: Path):
+def login_with_sessionid(sessionid: str, session_path: Path, proxy: Optional[str] = None):
     cl = Client()
+    if proxy:
+        cl.set_proxy(proxy)
     print("\nAttempting login with sessionid cookie...")
     try:
         cl.login_by_sessionid(sessionid.strip())
@@ -44,15 +46,20 @@ def login_with_sessionid(sessionid: str, session_path: Path):
 def main():
     parser = argparse.ArgumentParser(description="Instagrapi login helper")
     parser.add_argument("--sessionid", help="Instagram sessionid cookie value", default=None)
+    parser.add_argument("--proxy", help="Proxy URL (e.g. http://user:pass@host:port or socks5://host:port)", default=None)
     parser.add_argument("-u", "--username", help="Instagram username", default=None)
     parser.add_argument("-p", "--password", help="Instagram password", default=None)
     args = parser.parse_args()
+
+    active_proxy = args.proxy or resolve_instagrapi_proxy()
+    if active_proxy:
+        print(f"[PROXY] Using proxy: {active_proxy.split('@')[-1] if '@' in active_proxy else active_proxy}")
 
     session_path = Path(DEFAULT_SESSION_PATH)
     session_path.parent.mkdir(parents=True, exist_ok=True)
 
     if args.sessionid:
-        if login_with_sessionid(args.sessionid, session_path):
+        if login_with_sessionid(args.sessionid, session_path, active_proxy):
             return
         sys.exit(1)
 
@@ -77,11 +84,13 @@ def main():
             if not attempt_pass:
                 sess_id = input("\nEnter 'sessionid' cookie from browser (instagram.com -> DevTools -> Application/Storage -> Cookies -> sessionid): ").strip()
                 if sess_id:
-                    if login_with_sessionid(sess_id, session_path):
+                    if login_with_sessionid(sess_id, session_path, active_proxy):
                         return
                 sys.exit(1)
 
         cl = Client()
+        if active_proxy:
+            cl.set_proxy(active_proxy)
         cl.challenge_code_handler = challenge_code_handler
 
         print(f"\nAttempting login as @{username}...")
@@ -114,7 +123,7 @@ def main():
                 continue
             elif choice == "2":
                 sess_id = input("Enter browser 'sessionid' cookie: ").strip()
-                if sess_id and login_with_sessionid(sess_id, session_path):
+                if sess_id and login_with_sessionid(sess_id, session_path, active_proxy):
                     return
                 sys.exit(1)
             else:

@@ -536,6 +536,8 @@ instagrapi when a saved session exists.
 | `HIKER_RETRY_ATTEMPTS` | `3` | Attempts per request; `1` disables retrying |
 | `HIKER_RETRY_DELAY` | `0.6` | Seconds before the first retry, growing after each |
 | `HIKER_CONTACT_MAX_CHECKS` | `100` | Ceiling on accounts examined by the contact commands |
+| `INSTAGRAPI_PROXY` | *(empty)* | Optional HTTP/SOCKS5 proxy URL for instagrapi backend |
+| `INSTAGRAM_PROXY` | *(empty)* | Alias for `INSTAGRAPI_PROXY` |
 
 ### AI mode
 

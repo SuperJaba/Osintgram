@@ -33,6 +33,24 @@ class InstagrapiBackendError(Exception):
     """Raised when the instagrapi backend can't authenticate."""
 
 
+def resolve_instagrapi_proxy(
+    credentials_path: str = "config/credentials.ini",
+) -> Optional[str]:
+    """Resolve proxy URL for instagrapi (HTTP/HTTPS/SOCKS5 / rotating proxy)."""
+    proxy = os.getenv("INSTAGRAPI_PROXY") or os.getenv("INSTAGRAM_PROXY")
+    if proxy and proxy.strip():
+        return proxy.strip()
+    try:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(credentials_path)
+        val = parser.get("Credentials", "proxy", fallback=None)
+        if val and val.strip():
+            return val.strip()
+    except Exception:
+        pass
+    return None
+
+
 def resolve_instagrapi_credentials(
     credentials_path: str = "config/credentials.ini",
 ) -> tuple[Optional[str], Optional[str]]:
@@ -63,7 +81,7 @@ def session_exists(session_path: str = DEFAULT_SESSION_PATH) -> bool:
 class InstagrapiClient:
     """HikerAPI-shaped wrapper around an authenticated instagrapi.Client."""
 
-    def __init__(self, username: str, password: str, session_path: str = DEFAULT_SESSION_PATH):
+    def __init__(self, username: str, password: str, session_path: str = DEFAULT_SESSION_PATH, proxy: Optional[str] = None):
         session_file = Path(session_path)
         if not session_file.exists():
             raise InstagrapiBackendError(
@@ -76,6 +94,12 @@ class InstagrapiClient:
         from instagrapi import Client
 
         self._cl = Client()
+        self._proxy = proxy or resolve_instagrapi_proxy()
+        if self._proxy:
+            try:
+                self._cl.set_proxy(self._proxy)
+            except Exception as e:
+                raise InstagrapiBackendError(f"Failed to set instagrapi proxy {self._proxy}: {e}") from e
         self._cl.load_settings(session_file)
         try:
             self._cl.login(username, password)
