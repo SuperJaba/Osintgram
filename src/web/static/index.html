@@ -3792,6 +3792,34 @@
     ".list-filter", ".list-filter-count", ".map-details",
   ].join(",");
 
+  async function exportSocialGraph(button) {
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "⏳ Exporting…";
+    try {
+      const target = exportState.meta?.target || "target";
+      const results = exportState.cards.map((c) => ({ name: c.name, result: c.result }));
+      const resp = await fetch("/api/export/graph", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, results, format: "gexf" }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${target}_network.gexf`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      button.textContent = "✓ Downloaded";
+      setTimeout(() => { button.textContent = original; button.disabled = false; }, 2000);
+    } catch (err) {
+      alert(`Graph export failed: ${err.message || err}`);
+      button.textContent = original;
+      button.disabled = false;
+    }
+  }
+
   async function exportReport(button) {
     const original = button.textContent;
     button.disabled = true;
@@ -3923,12 +3951,14 @@
     outHeading.innerHTML = `<span>${title}${backend ? ` &middot; via ${escapeHtml(backend)}` : ""}</span>
       <button class="export-btn" type="button" data-save-dossier title="Save this search: you can reopen it without spending requests again, and compare it with a later one">💾 Save dossier</button>
       <button class="export-btn" type="button" data-export-all title="Download request, answer and every result as one JSON file">⬇ Export all</button>
+      <button class="export-btn" type="button" data-export-graph title="Export relationship graph of followers, following, and interactions as GEXF (for Gephi)">🕸️ Graph (GEXF)</button>
       <button class="export-btn" type="button" data-export-report title="Download a standalone HTML report, readable without Osintgram and printable to PDF">📄 Report</button>`;
     outHeading.hidden = false;
     if (exportState.meta && backend) exportState.meta.backend = backend;
   }
   outHeading.addEventListener("click", (event) => {
     if (event.target.closest("[data-export-all]")) exportAll();
+    else if (event.target.closest("[data-export-graph]")) exportSocialGraph(event.target.closest("[data-export-graph]"));
     else if (event.target.closest("[data-export-report]")) exportReport(event.target.closest("[data-export-report]"));
     else if (event.target.closest("[data-save-dossier]")) saveDossier(event.target.closest("[data-save-dossier]"));
   });

@@ -993,6 +993,35 @@ def update_websearch_settings(req: WebSearchSettingsRequest, request: Request):
     return {"ok": True, "enabled": cfg.enabled, "provider": cfg.provider, "saved": saved}
 
 
+class GraphExportRequest(BaseModel):
+    target: str = "target"
+    results: list = []
+    format: str = "gexf"
+
+
+@app.post("/api/export/graph")
+def export_network_graph(req: GraphExportRequest):
+    """Export social network graph from scan results to GEXF (for Gephi) or JSON."""
+    from src.web.graph_export import build_social_graph, export_gexf
+    graph = build_social_graph(req.results, target=req.target)
+    safe_target = re.sub(r"[^\w.-]+", "_", req.target or "target")
+
+    if req.format.lower() == "json":
+        body = json.dumps(graph, ensure_ascii=False, indent=2)
+        return Response(
+            content=body,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{safe_target}_network.json"'},
+        )
+    else:
+        gexf_content = export_gexf(graph)
+        return Response(
+            content=gexf_content,
+            media_type="application/xml",
+            headers={"Content-Disposition": f'attachment; filename="{safe_target}_network.gexf"'},
+        )
+
+
 class DownloadRequest(BaseModel):
     urls: list
     name: str = "media" 
