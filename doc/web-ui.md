@@ -337,10 +337,21 @@ full profile lookup. See [Keeping the cost down](#6-keeping-the-cost-down).
 |---|---|---|
 | **Hashtag search** | Posts published with a hashtag, and who posted them | `hashtag`, `sort` (`top`/`recent`), `limit` (30) |
 | **Place search** | Recent posts from a place, searched by name, with the matched place and its alternatives | `place`, `limit` (30) |
+| **Post comments** | Every comment on one specific post or reel, given directly | `post`, `limit` |
 | **Public web context** | Search public web context about landmarks or venues (opt-in) | `query` |
 
 With only these selected the username field stops being required, and the label
 says so.
+
+**On "Post comments":** `post` takes whatever's easiest to have in hand — the
+post/reel's full Instagram URL (`/p/`, `/reel/`, `/reels/` or `/tv/`, with or
+without a username in front, and with or without trailing parameters such as
+`?igsh=...`), its shortcode (the part after `/p/` or `/reel/` in the URL), or a
+raw id you already have from an earlier result (e.g. a post preview's `"id"`
+field). The shortcode is the post's id written in base 64, so it is decoded
+locally: resolving it costs no request, on either backend. The one exception
+is a `/share/...` short link, which only Instagram can follow: that costs one
+request on HikerAPI. If one fails, paste the post's own URL instead.
 
 ---
 
@@ -545,13 +556,14 @@ Settings can be changed dynamically from the web UI header (⚙️ button) or in
 
 | Setting / Env Var | Default | What it does |
 |---|---|---|
-| `provider` / `LLM_PROVIDER` | `lmstudio` | AI backend provider (`lmstudio` or `ollama`) |
-| `base_url` / `LLM_BASE_URL` | `http://127.0.0.1:1234/v1` | Endpoint URL (for LM Studio/OpenAI or Ollama) |
-| `model` / `LLM_MODEL` / `OLLAMA_MODEL` | `qwen3.5-4b` | Active model identifier |
-| `api_key` / `LLM_API_KEY` | *(empty)* | Optional API key for OpenAI-compatible proxies |
+| `provider` / `LLM_PROVIDER` / `LLM_BACKEND` | `lmstudio` | AI backend provider (`lmstudio` or `ollama`) |
+| `base_url` / `LLM_BASE_URL` / `LMSTUDIO_HOST` / `OPENAI_BASE_URL` | `http://127.0.0.1:1234/v1` | Endpoint URL (for LM Studio/OpenAI or Ollama) |
+| `model` / `LLM_MODEL` / `OLLAMA_MODEL` / `LMSTUDIO_MODEL` | `qwen3.5-4b` | Active model identifier |
+| `api_key` / `LLM_API_KEY` / `LMSTUDIO_API_KEY` / `OPENAI_API_KEY` | *(empty)* | Optional API key for OpenAI-compatible proxies |
 | `WEB_SEARCH_ENABLED` | `false` | Opt-in toggle for public web context in AI mode (#2699) |
 | `WEB_SEARCH_PROVIDER` | `duckduckgo` | Provider: `duckduckgo`, `wikipedia`, `searxng`, or `parallel` |
 | `SEARXNG_URL` | `http://127.0.0.1:8080` | URL of self-hosted SearXNG meta-search instance |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Where Ollama is listening |
 | `OLLAMA_MAX_TOKENS` | `1024` | Cap on the model's reply length |
 | `OLLAMA_NUM_CTX` | `16384` | Context window when using Ollama |
 | `OLLAMA_TEMPERATURE` | `0.1` | Temperature for tool picking |

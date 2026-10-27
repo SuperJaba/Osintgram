@@ -15,7 +15,7 @@ Ask in plain language and a **local AI model** figures out which lookups to
 run. Or don't: pick the commands yourself and skip the model entirely.
 
 <p align="center">
-<img src=".img/web-app.png" width="900" alt="The Osintgram web interface: a terminal-style header, the command picker, and result cards showing profile details and hashtags">
+<img src=".img/web-app.png" width="900" alt="The Osintgram web interface: the request form with a run sheet showing limits and cost, the written answer, and numbered result exhibits with profile details and hashtags">
 </p>
 
 ---
@@ -51,7 +51,7 @@ Osintgram.
 ## Two ways to drive it
 
 <p align="center">
-<img src=".img/web-commands.png" width="860" alt="Base mode: 29 commands in three columns, grouped and collapsible, with a search box">
+<img src=".img/web-commands.png" width="860" alt="Base mode: 29 commands in two columns, grouped by colour and collapsible, with a search box and the run sheet">
 </p>
 
 **AI mode** — describe what you want. A local model picks the commands, runs
@@ -75,7 +75,7 @@ or a place — those searches belong to no account.
 | **Network** | Followers and followings, accounts Instagram suggests as related, who tagged them, who they tagged, who comments most — and **mutual connections** between two accounts |
 | **Content** | Hashtags ranked by use, captions, every comment, like and comment statistics, photo/video/carousel breakdown with views and paid partnerships, **posting-times heatmap**, geotagged locations **on a map**, photo alt text |
 | **Contacts** | Public emails and phone numbers among a target's followers or followings |
-| **No target needed** | Posts published with a **hashtag** (top or recent) or from a **place**, and who published them |
+| **No target needed** | Posts published with a **hashtag** (top or recent) or from a **place**, and who published them — plus every **comment on one specific post or reel**, given its URL, shortcode or id |
 
 Stories, highlights and profile pictures come back as direct CDN links — and
 any card with media in it offers a one-click zip of the originals.

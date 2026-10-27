@@ -11,6 +11,7 @@ Estimates are ranges, never promises: page sizes vary with the endpoint and
 Instagram's own batching, and a cache hit costs nothing at all.
 """
 import math
+import re
 from typing import Optional
 
 # Observed page sizes (items per request) for the endpoints behind each
@@ -33,6 +34,9 @@ _FEED = {
 # Feed + one comment scan per post.
 _FEED_AND_COMMENTS = {"get_comment_data", "get_people_who_commented"}
 _CONTACTS = {"get_followers_email", "get_followings_email", "get_followers_phone", "get_followings_phone"}
+# Mirrors OsintgramService._POST_PATH: a post URL carrying its shortcode is
+# decoded locally, so only a /share/ short link costs a resolution request.
+_POST_PATH = re.compile(r"/(?:p|reel|reels|tv)/[A-Za-z0-9_-]{6,}")
 
 
 def _pages(count: Optional[int], per_page: tuple) -> tuple:
@@ -96,6 +100,14 @@ def estimate_command(name: str, params: dict, profile: dict, max_items: Optional
     if name == "search_location":
         pages = _pages(_capped(params.get("limit"), None, fallback=30), USERS_PER_PAGE)
         return (pages[0] + 1, pages[1] + 1)  # plus the place lookup
+    if name == "get_post_comments":
+        post = str(params.get("post") or "").strip()
+        # A URL or shortcode is decoded locally and costs nothing; only a
+        # /share/ short link needs one resolution request to be followed.
+        is_url = post.startswith(("http://", "https://"))
+        resolving = 1 if is_url and ("/share/" in post or not _POST_PATH.search(post)) else 0
+        pages = _pages(_capped(params.get("limit"), None, fallback=100), COMMENTS_PER_PAGE)
+        return (pages[0] + resolving, pages[1] + resolving)
     if name == "compare_with":
         scope = params.get("scope") or "both"
         limit = params.get("limit")

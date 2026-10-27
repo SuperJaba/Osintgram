@@ -15,12 +15,19 @@ import queue
 import re
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from importlib import metadata
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
-import ollama
+import httpx
+
+try:
+    import ollama
+except ImportError:
+    ollama = None
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -43,10 +50,89 @@ from src.osint_service import (
 )
 from src.web import cost, dossier, download, history
 from src.web.request_cache import PersistentRequestCache
-from src.web.tools import TARGET_FREE_TOOLS, build_tools, resolve_call_args, tool_specs
-from src.web.llm_client import fetch_available_models, resolve_llm_info, run_llm_chat, save_ai_config, set_runtime_ai_config
+from src.web.tools import (
+    TARGET_FREE_TOOLS,
+    build_tools,
+    resolve_call_args,
+    tool_specs,
+    tools_to_openai_specs,
+)
+from src.web.llm_client import (
+    fetch_available_models,
+    resolve_llm_info,
+    run_llm_chat,
+    save_ai_config,
+    set_runtime_ai_config,
+)
 
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+LLM_BACKEND = os.getenv("LLM_BACKEND", "auto").lower()
+LMSTUDIO_API_KEY = os.getenv("LMSTUDIO_API_KEY", os.getenv("OPENAI_API_KEY", "lm-studio"))
+
+
+def _detect_wsl_host() -> Optional[str]:
+    try:
+        with open("/proc/version", "r") as f:
+            if "microsoft" in f.read().lower():
+                import subprocess
+                out = subprocess.check_output(["ip", "route"], text=True)
+                for line in out.splitlines():
+                    if line.startswith("default via"):
+                        return line.split()[2]
+    except Exception:
+        pass
+    return None
+
+
+def resolve_lmstudio_host() -> str:
+    explicit = os.getenv("LMSTUDIO_HOST") or os.getenv("OPENAI_BASE_URL")
+    if explicit:
+        return explicit
+    wsl_ip = _detect_wsl_host()
+    if wsl_ip:
+        try:
+            with httpx.Client(timeout=0.3) as c:
+                c.get("http://127.0.0.1:1234/v1/models")
+                return "http://127.0.0.1:1234/v1"
+        except Exception:
+            return f"http://{wsl_ip}:1234/v1"
+    return "http://127.0.0.1:1234/v1"
+
+
+def resolve_lmstudio_model(host: Optional[str] = None) -> str:
+    explicit = os.getenv("LMSTUDIO_MODEL")
+    if explicit:
+        return explicit
+    host = host or resolve_lmstudio_host()
+    try:
+        with httpx.Client(timeout=1.0) as c:
+            r = c.get(f"{host.rstrip('/')}/models")
+            if r.status_code == 200:
+                models = r.json().get("data", [])
+                for m in models:
+                    mid = m.get("id", "")
+                    if "embed" not in mid and ("qwen" in mid.lower() or "llama" in mid.lower()):
+                        return mid
+                for m in models:
+                    mid = m.get("id", "")
+                    if "embed" not in mid:
+                        return mid
+    except Exception:
+        pass
+    return "local-model"
+
+
+def resolve_llm_backend() -> str:
+    """Determine whether to use 'lmstudio' (OpenAI-compatible) or 'ollama'."""
+    backend = (os.getenv("LLM_BACKEND") or "").lower()
+    if backend in ("lmstudio", "lm_studio", "openai"):
+        return "lmstudio"
+    if backend == "ollama":
+        return "ollama"
+    if os.getenv("LMSTUDIO_HOST") or os.getenv("OPENAI_BASE_URL"):
+        return "lmstudio"
+    return "ollama"
+
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL") or "llama3.1:8b"
 OLLAMA_MAX_TOKENS = int(os.getenv("OLLAMA_MAX_TOKENS", "1024"))
 # Ollama loads a model with a 4096-token window unless told otherwise, however
 # large a context the model itself supports. That is not enough here: the 28
@@ -61,6 +147,7 @@ OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "16384"))
 # (0.8) makes an 8B model wander between plausible-looking tools and invent
 # argument values; near-zero makes the choice repeatable.
 OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.1"))
+
 MAX_TOOL_TURNS = 8
 # Every ollama.chat() call re-sends and reprocesses the full message history
 # (no server-side prompt caching like the Anthropic API) - a large tool
@@ -139,11 +226,15 @@ app = FastAPI(title="Osintgram Web")
 # The app is meant for 127.0.0.1 and has no login, which is fine for a tool
 # you run on your own machine - but "local" is exactly what a DNS-rebinding
 # page targets: it makes your browser resolve its own hostname to 127.0.0.1
-# and then talks to this server as if it were same-origin. Every other
-# endpoint is already covered, because they all require a JSON body and a
-# cross-origin JSON POST needs a CORS preflight that never succeeds here.
-# Rebinding sidesteps that, so the two endpoints that touch the API key check
-# the hostname they were reached on as well. Localhost only, a few lines.
+# and then talks to this server as if it were same-origin. A state-changing
+# endpoint with a JSON body is covered on its own, since a cross-origin JSON
+# POST/DELETE needs a CORS preflight that never succeeds here - but a plain
+# GET is a CORS "simple request": no preflight, no body, sent (and acted on
+# server-side) whether or not the calling page can read the response. So any
+# endpoint reachable by GET needs this check explicitly too, not just the
+# ones that write. Used on the key and dossier endpoints; a JSON-body POST
+# elsewhere doesn't strictly need it, but calling it is always harmless.
+# Localhost only, a few lines.
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0"}
 
 
@@ -162,7 +253,7 @@ def _is_local_host(value: str) -> bool:
 
 def _require_local_origin(request: Request) -> None:
     if not _is_local_host(request.headers.get("host", "")):
-        raise HTTPException(403, "The key can only be set from localhost.")
+        raise HTTPException(403, "This endpoint only answers requests reached via localhost.")
     origin = request.headers.get("origin")
     if origin and not _is_local_host(origin):
         raise HTTPException(403, "Origin not allowed.")
@@ -365,10 +456,11 @@ def _run_agent_events(
         f"investigating the Instagram account @{service.target} (already "
         "resolved - do not attempt to look up a different username)"
         if service.target else
-        "searching Instagram by hashtag and by place. No target account is "
-        "set, so only the hashtag/place search tools are available - if the "
-        "user asks about a specific account, say that they have to type the "
-        "username in the target field first"
+        "searching Instagram by hashtag, by place, or pulling the comments off "
+        "one specific post/reel given its URL. No target account is set, so "
+        "only those target-free tools are available - if the user asks about "
+        "a specific account's own feed/followers/profile, say that they have "
+        "to type the username in the target field first"
     )
     known = _profile_facts(service)
     system_prompt = (
@@ -403,6 +495,8 @@ def _run_agent_events(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
     ]
+
+    backend = resolve_llm_backend()
 
     for _ in range(MAX_TOOL_TURNS):
         # Streamed so the final answer appears word by word instead of after a
@@ -443,15 +537,16 @@ def _run_agent_events(
             return
 
         for call in tool_calls:
-            name = call.function.name
+            name = call["name"]
             result, parsed_result, is_error = yield from _execute_tool_events(
-                service, name, dispatch.get(name), dict(call.function.arguments or {}), max_items, emit_live
+                service, name, dispatch.get(name), dict(call["arguments"] or {}), max_items, emit_live
             )
             model_facing_result = result if is_error else _truncate_for_model(parsed_result)
             messages.append({
                 "role": "tool",
-                "tool_call_id": getattr(call, "id", f"call_{name}"),
+                "tool_call_id": getattr(call, "id", None) or (call.get("id") if isinstance(call, dict) else f"call_{name}"),
                 "tool_name": name,
+                "name": name,
                 "content": model_facing_result,
             })
 
@@ -485,7 +580,10 @@ def _profile_facts(service: OsintgramService) -> str:
         if isinstance(user.get(key), int):
             bits.append(f"{user[key]} {label}")
     if user.get("is_private"):
-        bits.append("the profile is PRIVATE on Instagram (call tools normally; if the logged-in user has permission or follows it, Instagram will return the data)")
+        if service.backend_name == "instagrapi":
+            bits.append("the profile is PRIVATE on Instagram (call tools normally; if the logged-in user has permission or follows it, Instagram will return the data)")
+        else:
+            bits.append("the profile is PRIVATE, so any tool needing a public one will refuse")
     else:
         bits.append("the profile is public")
     for key in ("is_verified", "is_business"):
@@ -621,11 +719,26 @@ def _run_safe_events(make_events: Callable[[Callable[[dict], None]], Iterator[di
                 q.put(event)
         except QueryCancelledError:
             pass  # the user stopped the search - nothing left to report
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            q.put({
+                "type": "error",
+                "detail": (
+                    f"Cannot reach LM Studio at {resolve_lmstudio_host()}: {e}. Make sure LM Studio "
+                    f"is running and the local server is started (default port 1234)."
+                ),
+            })
+        except httpx.HTTPStatusError as e:
+            q.put({
+                "type": "error",
+                "detail": f"LM Studio returned HTTP {e.response.status_code}: {e.response.text[:200]}",
+            })
+        except httpx.HTTPError as e:
+            q.put({"type": "error", "detail": f"LM Studio communication error: {e}"})
         except ConnectionError as e:
             llm_info = resolve_llm_info()
-            if llm_info["provider"] == "lmstudio":
+            if llm_info.get("provider") == "lmstudio":
                 err_detail = (
-                    f"Cannot reach LM Studio at {llm_info['lmstudio_url']}: {e}. "
+                    f"Cannot reach LM Studio at {llm_info.get('base_url', 'http://127.0.0.1:1234/v1')}: {e}. "
                     "Make sure LM Studio is running with local server started on port 1234."
                 )
             else:
@@ -635,8 +748,11 @@ def _run_safe_events(make_events: Callable[[Callable[[dict], None]], Iterator[di
                     f"(`ollama pull {OLLAMA_MODEL}`)."
                 )
             q.put({"type": "error", "detail": err_detail})
-        except ollama.ResponseError as e:
-            q.put({"type": "error", "detail": f"Ollama error: {e}"})
+        except Exception as e:
+            if ollama and isinstance(e, getattr(ollama, "ResponseError", ())):
+                q.put({"type": "error", "detail": f"Ollama error: {e}"})
+            else:
+                q.put({"type": "error", "detail": f"LLM error: {e}"})
         finally:
             q.put(_SENTINEL)
 
@@ -669,6 +785,7 @@ THIRD_PARTY = [
     ("hikerapi", "backend Instagram (HikerAPI)", "https://hikerapi.com"),
     ("instagrapi", "backend Instagram alternativo", "https://github.com/subzeroid/instagrapi"),
     ("ollama", "local model client", "https://github.com/ollama/ollama-python"),
+    ("httpx", "HTTP & LM Studio client", "https://www.python-httpx.org"),
     ("geopy", "geocodifica inversa (Nominatim)", "https://github.com/geopy/geopy"),
 ]
 
@@ -689,6 +806,8 @@ def _library_credit(dist: str, role: str, url: str) -> dict:
 def about():
     """The header's logo and version line (the CLI's own src/artwork.py) and
     the footer's project/credits info."""
+    backend = resolve_llm_backend()
+    active_model = resolve_lmstudio_model() if backend == "lmstudio" else OLLAMA_MODEL
     return {
         "logo": artwork.ascii_art,
         "version": artwork.version,
@@ -699,6 +818,7 @@ def about():
         # Shown in the footer's attribution: the model's own license terms
         # apply on top of Ollama's (e.g. "Built with Llama" for Llama models).
         "ollama_model": f"{resolve_llm_info()['provider'].upper()}: {resolve_llm_info()['model']}",
+        "llm_backend": resolve_llm_info()["provider"],
     }
 
 
@@ -1129,21 +1249,24 @@ def download_media(req: DownloadRequest):
 
 
 @app.post("/api/dossier")
-def save_dossier(run: dict):
+def save_dossier(run: dict, request: Request):
     """Store a finished search so it can be reopened for free later - and
     compared with a later run of the same target."""
+    _require_local_origin(request)
     if not run.get("target"):
         raise HTTPException(400, "The dossier is missing its target.")
     return dossier.save(run)
 
 
 @app.get("/api/dossier")
-def list_dossiers(target: Optional[str] = None):
+def list_dossiers(request: Request, target: Optional[str] = None):
+    _require_local_origin(request)
     return dossier.list_for(target)
 
 
 @app.get("/api/dossier/{target}/{dossier_id}")
-def get_dossier(target: str, dossier_id: str):
+def get_dossier(target: str, dossier_id: str, request: Request):
+    _require_local_origin(request)
     run = dossier.load(target, dossier_id)
     if run is None:
         raise HTTPException(404, "Dossier not found.")
@@ -1151,13 +1274,15 @@ def get_dossier(target: str, dossier_id: str):
 
 
 @app.delete("/api/dossier/{target}/{dossier_id}")
-def delete_dossier(target: str, dossier_id: str):
+def delete_dossier(target: str, dossier_id: str, request: Request):
+    _require_local_origin(request)
     return {"deleted": dossier.delete(target, dossier_id)}
 
 
 @app.get("/api/dossier/{target}/{before_id}/diff/{after_id}")
-def diff_dossiers(target: str, before_id: str, after_id: str):
+def diff_dossiers(target: str, before_id: str, after_id: str, request: Request):
     """What changed between two saved runs of the same target."""
+    _require_local_origin(request)
     before, after = dossier.load(target, before_id), dossier.load(target, after_id)
     if before is None or after is None:
         raise HTTPException(404, "Dossier not found.")
