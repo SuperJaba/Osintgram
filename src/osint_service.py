@@ -1002,15 +1002,20 @@ class OsintgramService:
             return []
         stories = []
         for item in reel.get("items", []):
-            # For a photo this is the photo itself; for a video it's the
-            # cover frame - returned as thumbnail_url so a video story can be
-            # previewed without loading the video (`url` is the .mp4).
-            image_candidates = (item.get("image_versions2") or {}).get("candidates") or []
-            image_url = image_candidates[0].get("url") if image_candidates else None
+            # Pick highest resolution candidate for lossless image quality
+            candidates = (item.get("image_versions2") or {}).get("candidates") or []
+            best_img = max(candidates, key=lambda c: (c.get("width") or 0) * (c.get("height") or 0), default=None)
+            image_url = best_img.get("url") if best_img else (candidates[0].get("url") if candidates else None)
+
+            # Pick highest resolution candidate for lossless video quality
+            videos = item.get("video_versions") or []
+            best_vid = max(videos, key=lambda v: (v.get("width") or 0) * (v.get("height") or 0), default=None)
+            video_url = best_vid.get("url") if best_vid else (videos[0].get("url") if videos else None)
+
             if item.get("media_type") == 1 and image_url:
                 story = {"id": item.get("id"), "media_type": "photo", "url": image_url}
-            elif item.get("media_type") == 2 and item.get("video_versions"):
-                story = {"id": item.get("id"), "media_type": "video", "url": item["video_versions"][0]["url"]}
+            elif item.get("media_type") == 2 and video_url:
+                story = {"id": item.get("id"), "media_type": "video", "url": video_url}
                 if image_url:
                     story["thumbnail_url"] = image_url
             else:
@@ -1032,13 +1037,16 @@ class OsintgramService:
         highlights = []
         for item in tray:
             cover = item.get("cover_media") or {}
-            image = cover.get("cropped_image_version") or cover.get("full_image_version") or {}
+            # Prefer full uncropped high-resolution version over cropped thumbnail
+            image = cover.get("full_image_version") or cover.get("cropped_image_version") or {}
+            img_url = image.get("url")
             highlights.append({
                 # "highlight:123..." -> the numeric id used by instagram.com/stories/highlights/<id>/
                 "id": (item.get("id") or "").split(":")[-1] or None,
                 "title": item.get("title"),
                 "media_count": item.get("media_count"),
-                "thumbnail_url": image.get("url"),
+                "url": img_url,
+                "thumbnail_url": img_url,
                 "created_at": item.get("created_at"),
                 "last_updated": item.get("latest_reel_media"),
             })

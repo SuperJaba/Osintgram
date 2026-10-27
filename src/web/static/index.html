@@ -3214,6 +3214,7 @@
         ${media}
         <span class="story-badge">${isVideo ? "▶ video" : "📷 photo"}</span>
         <a class="story-open" href="${url}" target="_blank" rel="noopener" title="Open in a new tab">↗</a>
+        <a class="story-dl" href="${url}" download="${i.id || 'story'}.${isVideo ? 'mp4' : 'jpg'}" target="_blank" rel="noopener" title="Download original high-res ${isVideo ? 'video' : 'photo'}" style="position:absolute; bottom:6px; right:6px; background:rgba(0,0,0,0.6); color:#fff; border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; text-decoration:none; font-size:12px;">⬇</a>
         <div class="story-fallback">Preview unavailable<a href="${url}" target="_blank" rel="noopener">Open ↗</a></div>
       </div>`;
     });
@@ -3704,9 +3705,9 @@
       value.forEach((item) => collectMediaUrls(item, found));
     } else if (value && typeof value === "object") {
       for (const [key, item] of Object.entries(value)) {
-        if ((key === "media_url" || key === "url") && typeof item === "string" && /^https:\/\//.test(item)) {
+        if ((key === "media_url" || key === "url" || key === "thumbnail_url" || key === "cover_url") && typeof item === "string" && /^https:\/\//.test(item)) {
           found.push(item);
-        } else if (key !== "thumbnail_url") {
+        } else {
           collectMediaUrls(item, found);
         }
       }
