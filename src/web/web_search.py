@@ -38,7 +38,6 @@ _runtime_config: Optional[WebSearchConfig] = None
 
 def resolve_web_search_config() -> WebSearchConfig:
     """Resolve current web search config from runtime memory, env, or credentials.ini."""
-    global _runtime_config
     if _runtime_config is not None:
         return _runtime_config
 

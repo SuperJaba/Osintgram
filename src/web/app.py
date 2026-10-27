@@ -9,6 +9,7 @@ first. Uses a local LLM (Ollama) instead of a paid API so no external LLM
 key/billing is required - only Ollama running locally with a tool-calling
 capable model pulled (see README).
 """
+import configparser
 import json
 import os
 import queue

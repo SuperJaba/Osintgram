@@ -74,7 +74,6 @@ def _read_ai_config() -> dict:
 
 
 def set_runtime_ai_config(cfg: dict) -> None:
-    global _RUNTIME_AI_CONFIG
     _RUNTIME_AI_CONFIG.update(cfg)
 
 
